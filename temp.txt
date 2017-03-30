@@ -1,0 +1,237 @@
+void leer_archivo(void)
+{
+	// Abre para leer el archivo input_arguments.program y lo lee
+	// linea a linea imprimiendolas en pantalla.
+
+	if (  (fd_inputFile = fopen(arguments.program_file, "r" ) )  ==  NULL ) {
+		printf("ERROR: No es posible abrir el archivo %s\n", arguments.program_file);
+		exit(1);
+	}
+
+	while ( readLines() != NULL) {
+		parseLine();
+		printParsedLine();
+	}
+
+}
+//------------------------------------------------------------------
+
+void print_all_pages(void)
+{
+
+int pagina;
+struct page_struct page;
+
+	// Imprimo en forma paginada.
+	// Si la pagina contiene solo FFs, la salteo.
+
+	for ( pagina = 0; pagina < MAX_PAGES; pagina++) {
+		if ( load_one_page(pagina, &page) ) {
+			  send_page(pagina, &page);
+		} else {
+			  putchar_serial_port('Z');		// No hay mas paginas
+			  return;
+		}
+	}
+
+}
+//------------------------------------------------------------------
+
+//------------------------------------------------------------------
+void print_rxData(void)
+{
+int i;
+
+	for ( i=0; i < LINEBUFFERLENGHT; i++) {
+		if ( ( rxBuffer[i] == '\n') || ( rxBuffer[i] == '\0' ) ){
+			printf("\n");
+			break;
+		}
+
+		printf("rx->[0x%02x]",rxBuffer[i] );
+		if ( isprint(rxBuffer[i]) ) {
+			  printf("%c", rxBuffer[i]);
+		} else {
+			  printf(".");
+		}
+		printf("\n");
+	}
+}
+
+void printParsedLine(struct line_struct *rdline)
+{
+
+int i;
+
+	// Start char
+	printf("%c ", rdline->start_char);
+
+	// Line length
+	printf("0x%02x[%03d] ",rdline->length,rdline->length);
+
+	// Address
+	printf("0x%02x%02x[%03d %03d] ",rdline->address_H,rdline->address_L, rdline->address_H,rdline->address_L );
+
+	// Type
+	printf("0x%02x[%03d] ",rdline->eol,rdline->eol);
+
+	// Data
+	for (i =0;i<16; i++) printf(" %02x",rdline->data[i]);
+
+	printf(" [");
+	for (i =0;i<16; i++) printf(" %03d",rdline->data[i]);
+	printf(" ] ");
+
+	// Checksum
+	printf("0x%02x[%03d] ",rdline->checksum,rdline->checksum );
+
+	// Original line
+	//printf(" {%s}", data_line.line_str);
+	printf("\n");
+}
+//------------------------------------------------------------------
+void *main_thread(void *arg)
+{
+
+int pagina = 0;
+uint8 cks;
+
+	//printf("\n");
+	//sleep(5);
+
+	rx_code = NONE;
+
+	putchar_serial_port('S');	// Envio START.
+
+	// Protocolo
+	while(1) {
+
+	  // Espero recibir algun caracter.
+	  pthread_mutex_lock(&mutex); 			//mutex lock
+      pthread_cond_wait(&condition, &mutex); //wait for the condition
+      pthread_mutex_unlock(&mutex);
+
+	  // Puede ser ruido o un checksum de retorno o un comando.
+//	  print_rxData();
+
+
+	  switch(rx_code) {
+
+	  case RDY: // El datalogger esta listo para comenzar a transferir datos.
+		  leerArchivo();
+		  printf("Datalogger ready to bootload\n");
+		  break;
+
+	  case PG:	// Se requiere el envio de una pagina
+		  printf("\nRX: Send new page.\n");
+		  load_one_page(pagina);
+		  send_page(pagina);
+		  break;
+
+	  case MF:	// Solicita avanzar una pagina
+		  pagina++;
+		  printf("\nRX: Move forward 1 page(%03d).\n", pagina);
+		  break;
+
+	  case CKS:	// El datalogger envio un checksum
+		  printf("\nRX: Checksum=" );
+		  if (  strstr( rxBuffer, "CKS=") != NULL ) {
+			  cks = rxBuffer[4] & 0xFF;
+			  printf("0x%02x", cks);
+			  if ( isprint(cks) ) {
+					  printf(" [%c]\n", cks);
+				} else {
+					  printf(" [.]\n");
+				}
+		  }
+		 // printf("\nRX: Checksum=%s.\n", rxBuffer );
+		  break;
+
+	  case EX:	// Terminar
+		  printf("Exit..\n");
+		  exit(0);
+		  break;
+	  }
+
+	  rx_code = NONE;
+	  bzero(rxBuffer, sizeof(rxBuffer));
+
+  }
+}
+
+//------------------------------------------------------------------
+
+int putchar_serial_port (const uint8 c);
+void *RX_serial_port_thread(void *arg);
+void *main_thread(void *arg);
+
+int rx_code;
+typedef enum { NONE = 0, RDY, PG, MF, CKS, EX } t_ret_codes;
+
+
+//------------------------------------------------------------------
+int putchar_serial_port (const uint8 c)
+{
+	char data;
+
+data = c;
+
+	// En modo testing solo envio ( hacia un minicom por ej.) datos imprimibles.
+//	if ( !isprint(c) ) {
+//		data = '.';
+//	}
+
+	// Trasmite un caracter por el puerto serial
+	if ( write( fd_serial, &data, 1) < 0 ) {
+		printf("ERROR::putchar_serial_port\n");
+		return(false);
+	}
+
+	return (true);
+}
+//------------------------------------------------------------------
+//------------------------------------------------------------------
+void *RX_serial_port_thread(void *arg)
+{
+/*
+ * Thread que atiende al puerto serial.
+ * - Leo lineas completas y las almaceno en  un buffer circular para
+ *   que sean procesadas.
+ *   Oficia como productor de datos.
+ *
+ */
+
+int res, i;
+uint8 l_rxBuffer[LINEBUFFERLENGHT];
+
+	printf("RX thread init...\n");
+
+	while (1) {
+
+		// Espero indefinidamete una linea terminada en \n
+		// La copio al buffer general y aviso al resto de las tareas.
+		res = read(fd_serial, &l_rxBuffer, sizeof(l_rxBuffer));
+
+		if ( strstr( l_rxBuffer, "RDY") != NULL ) {
+			rx_code = RDY;
+		} else if ( strstr( l_rxBuffer, "PG") != NULL ) {
+			rx_code = PG;
+		} else 	if ( strstr( l_rxBuffer, "MF") != NULL ) {
+			rx_code = MF;
+		} else if ( strstr( l_rxBuffer, "CKS") != NULL ) {
+			rx_code = CKS;
+		} else if ( strstr( l_rxBuffer, "EX") != NULL ) {
+			rx_code = EX;
+		}
+
+		for(i=0; i<LINEBUFFERLENGHT; i++ ) {
+			if ( (l_rxBuffer[i] == '\n') || (l_rxBuffer[i] == '\r' ) )
+				l_rxBuffer[i] = '\0';
+		}
+		strncpy(rxBuffer, l_rxBuffer, LINEBUFFERLENGHT );
+		//printf("RX=[%s]\n", l_rxBuffer);
+		pthread_cond_signal(&condition); // Aviso que tengo un caracter para que despierte o timeout
+
+	}
+}
+//------------------------------------------------------------------
