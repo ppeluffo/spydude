@@ -84,9 +84,10 @@ int i;
 	return(page.valid_data);
 }
 //------------------------------------------------------------------
-void send_page(int pagina )
+uint8 send_page(int pagina )
 {
 	// Envia la pagina por el puerto serial y la despliega en pantalla
+
 int i;
 uint8 cks;
 char out_buffer[LINEBUFFERLENGHT];
@@ -98,7 +99,7 @@ char out_buffer[LINEBUFFERLENGHT];
 		bzero(out_buffer, sizeof(out_buffer));
 		sprintf(out_buffer,"Empty page: %03d\r\n", pagina);
 		printf("%s",out_buffer);
-		return;
+		return(0);
 	}
 
 	//  Caso 2: Hay una pagina activa ( con datos ).
@@ -114,24 +115,21 @@ char out_buffer[LINEBUFFERLENGHT];
 	sprintf(out_buffer,"\nPage=%03d, address=0x%04x ( 0x%02x 0x%02x ), checksum=0x%02x[%c]\r\n",pagina, page.start_address, page.address_H, page.address_L, page.checksum, cks);
 	printf("%s",out_buffer);
 
-	uart_putchar('K');				// opCode: NORMAL: Inicio de pagina
-	byte_send(page.address_H);
-	byte_send(page.address_L);
-	byte_send(page.checksum);
+	uart_putchar('K');				// Start of page.
+	uart_putchar(page.address_H);
+	uart_putchar(page.address_L);
+	uart_putchar(page.checksum);
 
 	// 2.2: Trasmito el payload de la pagina.
 	for ( i = 0; i < PAGESIZE_BYTES; i++ ) {
 
 		// Por si el dlg me pide abortar.
-		if ( abort_signal ) {
-			 abort_signal = false;
-			return;
-		}
+		if ( abort_signal )
+			return(0);
 
 		// Pagino la salida local
-		if ( i%16 == 0 ) {
+		if ( i%16 == 0 )
 			printf("\r\n");
-		}
 
 		// Trasmito y muestro en pantalla
 		bzero(out_buffer, sizeof(out_buffer));
@@ -143,11 +141,11 @@ char out_buffer[LINEBUFFERLENGHT];
 			printf(". ");
 		}
 
-		byte_send(page.buffer[i]);
+		uart_putchar(page.buffer[i]);
 	}
 
-	uart_putchar('L');				// opCode: NORMAL: Fin de pagina
 	printf("\r\n");
+	return(page.checksum);
 
 }
 //------------------------------------------------------------------

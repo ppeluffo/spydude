@@ -39,6 +39,14 @@ struct ring_buffer_struct {
 	uint8 data[RING_BUFFER_LENGTH];
 };
 
+#define LOCAL_BUFFER_LENGTH 32
+
+struct local_buffer_struct {
+	int ptr;
+	uint8 data[LOCAL_BUFFER_LENGTH];
+};
+
+
 static bool push_into_ring_buffer(uint8 c);
 static bool pop_from_ring_buffer(uint8 *c);
 static void init_ring_buffer( void );
@@ -46,7 +54,11 @@ static void flush_ring_buffer( void );
 static bool ring_buffer_is_empty( void );
 static bool ring_buffer_is_full( void );
 
+static bool push_into_local_buffer(uint8 c);
+static void flush_local_buffer( void );
+
 static struct ring_buffer_struct ring_buffer;
+static struct local_buffer_struct local_buffer;
 
 static int fd_serial;
 
@@ -57,33 +69,42 @@ void *RX_process_thread(void *arg)
 {
 	// Thread que procesa los caracteres enviados, implementando el
 	// protocolo
-	// Como desde el datalogger vamos a enviar los datos recibidos en hexadecimal
-	// con 2 nibbles, no usamos en el protocolo las letras A..F, a..f
+
 
 uint8 c;
 int pagina = 0;
-uint8 lbuff[8];
-int lptr = 0;
 int page_size;
+char *str;
+int remote_checksum;
+uint8 sent_checksum;
 
 	puts("Processing serial...");
 
 	// Fishing
-	link_established = false;
 	puts("Fishing...");
-	while ( ! link_established ) {
+	while ( 1 ) {
 		uart_putchar('S');
 		sleep(1);
+		while( ! ring_buffer_is_empty() ) {
+			pop_from_ring_buffer(&c);
+			push_into_local_buffer(c);
+		}
+		// Evaluo respuesta al SYNC
+		if (strstr(local_buffer.data,"O\n"))
+			break;
 	}
 
-	// Recivi 'O' (OK) .Dlg esta sincronizado.
-	leerArchivo();
-	puts("Reading file..");
-	pagina = 0;
+	// Recibi 'O\r' (OK) .Dlg esta sincronizado.
+	// Pido tamaño de pagina
+	puts("DLG connected !!");
+	flush_local_buffer();
+	uart_putchar('B');
+	puts("Page size ?");
 
-	while (1) {
+	while (1)
+	{
 
-		// Espero recibir algun caracter.
+		// Duermo esperando recibir algun caracter.
 		pthread_mutex_lock(&mutex); 			//mutex lock
 		pthread_cond_wait(&condition, &mutex); 	//wait for the condition
 		pthread_mutex_unlock(&mutex);
@@ -91,43 +112,68 @@ int page_size;
 		while( ! ring_buffer_is_empty() ) {
 
 			pop_from_ring_buffer(&c);
+			push_into_local_buffer(c);
 
-			printf("RX->[0x%02x]%c\n",c,c);
+			// Muestro el caracter recibido
+			if (isprint(c)) {
+				printf("RX->[0x%02x]%c\n",c,c);
+			} else {
+				printf("RX->[0x%02x].\n",c);
+			}
 
-			switch(c) {
-			case 'O':					// OK.Dlg esta sincronizado. Me mando el tamaño de pagina.
-				page_size = (int)strtol(lbuff, NULL, 16);
-				printf("Tamano pagina recibido = %03d\n", page_size);
-				PAGESIZE_BYTES = page_size;
-				leerArchivo();
-				puts("Reading file..");
-				pagina = 0;
-				break;
-			case 'P':	// Page
-				printf("Sending page %03d\n", pagina);
-				if (load_one_page(pagina)) {
-					send_page(pagina);
-				} else {
-					puts("Empty page");
-					uart_putchar('Z');		// No hay mas paginas
+			// Analizo
+			if ( c == '\n') {
+
+				if ( (str = strchr(local_buffer.data,'W')) ) {
+					// Block size
+					str ++;
+					page_size = (int)strtol(str, NULL, 16);
+					printf("Tamano pagina recibido = %03d\n", page_size);
+					PAGESIZE_BYTES = page_size;
+					leerArchivo();
+					puts("Reading file..");
+					pagina = 1;
+					flush_local_buffer();
+
+				} else if ( strstr (local_buffer.data, "P\n")  ) {
+					// Pide la pagina activa
+					printf("Sending page %03d\n", pagina);
+					if (load_one_page(pagina)) {
+						sent_checksum = send_page(pagina);
+					} else {
+						puts("Empty page");
+						uart_putchar('Z');		// No hay mas paginas
+					}
+					flush_local_buffer();
+
+				} else if ( strstr (local_buffer.data, "M\n")  ) {
+					// Avanzo una pagina
+					pagina++;
+					printf("Move forward to page %03d.\n", pagina);
+					flush_local_buffer();
+
+				} else if ( strstr (local_buffer.data, "A\n")  ) {
+					// Abortar trasmision de pagina. ( Lo controlo al recibir los datos !!! )
+					puts("Abort signal !!.\n");
+					flush_local_buffer();
+
+				} else if ( str = strchr (local_buffer.data, 'C')  ) {
+					// Leo el checksum
+					//remote_checksum = (int)strtol(str, NULL, 16);
+					remote_checksum = local_buffer.data[1];
+					if ( sent_checksum == remote_checksum ) {
+						printf("Verificacion de checksum = (0x%02x). OK.\n", remote_checksum);
+					} else {
+						printf("Verificacion de checksum = (0x%02x). ERROR !!\n", remote_checksum);
+					}
+					flush_local_buffer();
+
+				}	else if ( strstr (local_buffer.data, "X\n")  ) {
+					// Exit
+					puts("Exit..");
+					exit(0);
 				}
-				break;
-			case 'M':	// Move forward one page
-				pagina++;
-				printf("Move forward to page %03d.\n", pagina);
-				break;
-			case 'Q':	// Abort sending page
-				abort_signal = true;
-				puts("Abort signal received.");
-				break;
-			case 'X':	// Exit
-				puts("Exit..");
-				exit(0);
-				break;
-			default:	// Puede que sea un nro.
-				lbuff[lptr] = c;
-				lptr = ( lptr + 1) % 8;
-				break;
+
 			}
 		}
 	}
@@ -137,15 +183,16 @@ void *RX_listen_thread(void *arg)
 {
  /*
   * Thread que atiende al puerto serial.
-  * Leo en modo no canonico y las almaceno los bytes en  un buffer circular para
+  * Leo en modo no canonico y las almaceno los caracteres en  un buffer circular para
   * que sean procesadas.
   * Oficia como productor de datos.
+  * Cada dato que recibe lo guarda en un buffer circular y le avisa a la thread de proceso
+  * que hay datos disponibles.
   *
   */
 
-uint8 local_rx_buffer[RING_BUFFER_LENGTH];
+uint8 cChar;
 int res;
-int i;
 
 	init_ring_buffer();
 
@@ -153,53 +200,19 @@ int i;
 
  	while (1) {
 
- 		bzero(local_rx_buffer, sizeof(local_rx_buffer));
- 		// Se bloquea con el read hasta que halla una linea completa
- 		res = read(fd_serial, local_rx_buffer, RING_BUFFER_LENGTH);
- 		// Lo guardo en el ring_buffer
-  		// Elimino los \n y \r y paso los datos al buffer ppal.
- 		for (i = 0; i < RING_BUFFER_LENGTH; i++)
- 		{
+  		res = read(fd_serial, &cChar, 1);
+		push_into_ring_buffer(cChar);
 
- 			if ( local_rx_buffer[i] == 'O')
- 				link_established = true;
+		if ( cChar == 'A') 			// Lo debo controlar aqui porque sino mientras trasmito la
+			abort_signal = true;	// pagina no estoy controlando la recepcion de datos.
 
- 			if ( local_rx_buffer[i] == '\0')
- 			{
- 				break;
- 			}
- 			else
- 			{
- 				push_into_ring_buffer(local_rx_buffer[i]);
- 			//	printf("Rcvd 0x%02x\n",local_rx_buffer[i]);
- 			}
- 		}
-
- 		// Aviso al consumer que hay datos para trabajar.
+  		// Aviso al consumer que hay datos para trabajar.
  		pthread_cond_signal(&condition);
 
  		// Por amabilidad...
  		sched_yield();
  	}
  }
-//------------------------------------------------------------------
-bool  byte_send(const uint8 c)
-{
-	// Envia c/u de los nibbles que forman el byte.
-
-char data;
-char txbuff[8];
-int i;
-
-	bzero(txbuff,sizeof(txbuff));
-	sprintf(txbuff,"%02x.",c);
-	i = 0;
-	while ( ( data = txbuff[i++]) != '\0')
-		write( fd_serial, &data, 1);
-
-	return(true);
-
-}
 //------------------------------------------------------------------
 bool uart_putchar (const uint8 c)
 {
@@ -251,8 +264,8 @@ void open_serial_port(void)
   	 * CLOCAL  : conexion local, sin control de modem
   	 * CREAD   : activa recepcion de caracteres
   	*/
-  	cfsetispeed(&serialPortOptions, B115200);
-  	cfsetospeed(&serialPortOptions, B115200);
+  	cfsetispeed(&serialPortOptions, BAUDRATE);
+  	cfsetospeed(&serialPortOptions, BAUDRATE);
   	// gpsSerialPortOptions.c_cflag |= systemParameters.gpsBaudrate;
   	serialPortOptions.c_cflag &= ~CRTSCTS;
   	serialPortOptions.c_cflag |= CS8;
@@ -270,9 +283,11 @@ void open_serial_port(void)
   	*/
   	serialPortOptions.c_iflag &= ~IGNPAR;
   	//	serialPortOptions.c_iflag &= ~ICRNL;
-  	serialPortOptions.c_iflag |= ICRNL;
+  	//  serialPortOptions.c_iflag |= ICRNL;
   	serialPortOptions.c_iflag &= ~(IXON | IXOFF | IXANY);
-
+  	serialPortOptions.c_iflag &= ~IGNCR;  // turn off ignore \r
+  	serialPortOptions.c_iflag &= ~INLCR;  // turn off translate \n to \r
+  	serialPortOptions.c_iflag &= ~ICRNL;  // turn off translate \r to \n
   	/*
   	 * Local flags
   	 * ------------
@@ -292,7 +307,9 @@ void open_serial_port(void)
   	 * ------------
   	*/
   	serialPortOptions.c_oflag = 0;
-
+  	serialPortOptions.c_oflag &= ~ONLCR;  // turn off map \n  to \r\n
+  	serialPortOptions.c_oflag &= ~OCRNL;  // turn off map \r to \n
+  	serialPortOptions.c_oflag &= ~OPOST;  // turn off implementation defined output processing
   	/*
   	 * Caracteres de control
   	 * ---------------------
@@ -328,6 +345,20 @@ void open_serial_port(void)
 }
 //------------------------------------------------------------------
 // FUNCIONES BASICAS DE MANEJO DEL RING_BUFFER de USO PRIVADO
+//------------------------------------------------------------------
+static bool push_into_local_buffer(uint8 c)
+{
+	local_buffer.data[local_buffer.ptr] = c;
+	local_buffer.ptr = ( local_buffer.ptr + 1 ) % LOCAL_BUFFER_LENGTH;
+}
+//------------------------------------------------------------------
+static void flush_local_buffer( void )
+{
+	// Borra los punteros de rd y wr del buffer dejandolo en estado vacio.
+
+	memset(local_buffer.data, '\0', LOCAL_BUFFER_LENGTH );
+	local_buffer.ptr = 0;
+}
 //------------------------------------------------------------------
 static bool push_into_ring_buffer(uint8 c)
 {

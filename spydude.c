@@ -9,6 +9,8 @@
  */
 
 /*
+ * git push -u origin master
+ *
  *  Programa para trasmitir codigo a un datalogger y actualizarlo usando un bootloader
  *  Dado que el enlace va a ser serial wireless, en la parte de comunicaciones vamos a
  *  implementar un protocolo resistente a delays y  perdida de caracteres utilizando la
@@ -31,29 +33,16 @@
  *
  *  Parte 3:
  *  Implementar la salida por puerto serial
- *  Debe ser nocanonica e implementar sincronizacion entre threads.
+ *  Debe ser no canonica e implementar sincronizacion entre threads.
  *
  *  Parte 4:
  *  Implementar el protocolo de trasmision por bloques con retrasmisiones.
- *  'I': rx: Indica que el datalogger esta listo para programarse
- *  'g': tx: Respuesta que indica que el programa esta listo para enviar paginas
- *  'P': rx: Solicita envio de una pagina
- *  'F': rx: Avanza una pagina
- *  'Z': tx: En respuesta a 'P' si no hay mas paginas.
- *  'X': rx: Terminar.
  *
- *  Problema:
- *  La trasmision del caracter '\0' es muy complicado hacerlo por el puerto serial ya que
- *  es el caracter de archivo vacio.
- *  Cambiamos la implementacion y trasmitimos c/caracter en 2 nibbles, y un '.' como separador
- *  de caracteres. De este modo para trasmitir 256 bytes, terminamos trasmitiendo 750 bytes.
  *
  *  El protocolo implementa que el datalogger mande el tamanio de la pagina.
+ *  En el protocolo debo controlar cuando los checksum coinciden con caracteres de control ya que
+ *  esto desacomoda todo.
  *
- *  Como cada byte lo enviamos en modo hexadecimal ( 2 nibbles ) mas un delimitador, esto equivale
- *  a 3 bytes por c/u util.
- *  Implementamos dividir las paginas en slots de 32 bytes (96 caracteres transmitidos ) de modo que
- *  si hay errores, reintentamos solo un slot.
  *
  */
 
@@ -73,7 +62,7 @@ static char args_doc[] = "";
 
 /* The options we understand. */
 static struct argp_option options[] = {
-//  {"baud_rate", 'b', "BAUDRATE" , 0,  "Baud rate" },
+  {"baud_rate", 'b', "BAUDRATE" , 0,  "Baud rate" },
   {"program", 'p', "FILE", 0, "program file to bootload" },
   {"serial_port", 's',"SERIAL_PORT", 0, "serial port" },
   {"serial verbose", 'v',"SERIAL_VERBOSE", 0, "serial verbose{0,1}" },
@@ -89,9 +78,9 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
   switch (key)
     {
-//    case 'b':
-//     arguments->baud_rate = atoi(arg);
-//      break;
+    case 'b':
+     arguments->baud_rate = arg;
+     break;
     case 'p':
       arguments->program_file = arg;
       break;
@@ -114,7 +103,7 @@ static struct argp argp = { options, parse_opt, args_doc, doc };
   /* Default values. */
   arguments.program_file = "-";
   arguments.serial_port = "-";
-  arguments.baud_rate = 115200;
+  arguments.baud_rate = "-";
   arguments.serial_verbose = 0;
 
   PAGESIZE_WORDS = 128;
@@ -135,14 +124,25 @@ static struct argp argp = { options, parse_opt, args_doc, doc };
 	  exit (0);
   }
 
-  if ( arguments.baud_rate != 115200  ) {
-	  printf("Baud rate debe ser 115200\n");
+  if ( !strcmp( arguments.baud_rate, "-"  ) ) {
+	  printf("Debe indicar la velocidad\n");
 	  exit (0);
   }
 
-//  printf ("PROGRAM_FILE = %s\n", arguments.program_file);
-//  printf ("SERIAL_PORT = %s\n", arguments.serial_port);
-//  printf ("BAUD_RATE = %d\n", arguments.baud_rate);
+  BAUDRATE = 0;
+  if ( !strcmp( arguments.baud_rate, "9600"  ) ) {
+	  BAUDRATE = B9600;
+  } else   if ( !strcmp( arguments.baud_rate, "115200"  ) ) {
+	  BAUDRATE = B115200;
+  } else {
+	  puts("Baud rate no aceptada");
+	  exit(0);
+  }
+
+
+  printf ("PROGRAM_FILE = %s\n", arguments.program_file);
+  printf ("SERIAL_PORT = %s\n", arguments.serial_port);
+  printf ("BAUD_RATE = %d\n", arguments.baud_rate);
 
 
   open_serial_port();

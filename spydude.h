@@ -30,16 +30,18 @@ struct arguments
 {
   char *program_file;
   char *serial_port;
-  int baud_rate;
+  char * baud_rate;
   int serial_verbose;
 };
 
 struct arguments arguments;
 
+int BAUDRATE;
+
 #define LINEBUFFERLENGHT 512
 
 int load_one_page(int pagina);
-void send_page(int pagina);
+uint8 send_page(int pagina);
 void leer_archivo(void);
 
 pthread_mutex_t ring_buffer_mlock;
@@ -51,7 +53,6 @@ pthread_t RX_process_thread_handler;
 
 void open_serial_port(void);
 bool uart_putchar (const uint8 c);
-bool  byte_send(const uint8 c);
 void *RX_listen_thread(void *arg);
 void *RX_process_thread(void *arg);
 
@@ -59,7 +60,7 @@ int PAGESIZE_WORDS;
 int PAGESIZE_BYTES;
 
 bool abort_signal;
-bool link_established;
+
 //------------------------------------------------------------------;
 
 #endif /* SPYDUDE_H_ */
