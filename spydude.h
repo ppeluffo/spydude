@@ -60,6 +60,8 @@ int PAGESIZE_WORDS;
 int PAGESIZE_BYTES;
 
 bool abort_signal;
+int pagina;
+uint8 sent_checksum;
 
 //------------------------------------------------------------------;
 

@@ -62,6 +62,12 @@ static struct local_buffer_struct local_buffer;
 
 static int fd_serial;
 
+static void pv_process_W(void);
+static void pv_process_P(void);
+static void pv_process_M(void);
+static void pv_process_A(void);
+static void pv_process_X(void);
+static void pv_process_C(void);
 //------------------------------------------------------------------
 // FUNCIONES PUBLICAS
 //------------------------------------------------------------------
@@ -69,14 +75,9 @@ void *RX_process_thread(void *arg)
 {
 	// Thread que procesa los caracteres enviados, implementando el
 	// protocolo
-
+	// Actua bajo las ordenes(comandos) del datalogger.
 
 uint8 c;
-int pagina = 0;
-int page_size;
-char *str;
-int remote_checksum;
-uint8 sent_checksum;
 
 	puts("Processing serial...");
 
@@ -90,7 +91,7 @@ uint8 sent_checksum;
 			push_into_local_buffer(c);
 		}
 		// Evaluo respuesta al SYNC
-		if (strstr(local_buffer.data,"O\n"))
+		if (strstr(local_buffer.data,"O\r"))
 			break;
 	}
 
@@ -122,58 +123,26 @@ uint8 sent_checksum;
 			}
 
 			// Analizo
-			if ( c == '\n') {
+			if ( c == '\r') {
 
-				if ( (str = strchr(local_buffer.data,'W')) ) {
-					// Block size
-					str ++;
-					page_size = (int)strtol(str, NULL, 16);
-					printf("Tamano pagina recibido = %03d\n", page_size);
-					PAGESIZE_BYTES = page_size;
-					leerArchivo();
-					puts("Reading file..");
-					pagina = 1;
-					flush_local_buffer();
+				if ( strchr(local_buffer.data,'W') ) {
+					pv_process_W();
 
-				} else if ( strstr (local_buffer.data, "P\n")  ) {
-					// Pide la pagina activa
-					printf("Sending page %03d\n", pagina);
-					if (load_one_page(pagina)) {
-						sent_checksum = send_page(pagina);
-					} else {
-						puts("Empty page");
-						uart_putchar('Z');		// No hay mas paginas
-					}
-					flush_local_buffer();
+				} else if ( strchr (local_buffer.data, 'P')  ) {
+					pv_process_P();
 
-				} else if ( strstr (local_buffer.data, "M\n")  ) {
-					// Avanzo una pagina
-					pagina++;
-					printf("Move forward to page %03d.\n", pagina);
-					flush_local_buffer();
+				} else if ( strchr (local_buffer.data, 'M')  ) {
+					pv_process_M();
 
-				} else if ( strstr (local_buffer.data, "A\n")  ) {
-					// Abortar trasmision de pagina. ( Lo controlo al recibir los datos !!! )
-					puts("Abort signal !!.\n");
-					flush_local_buffer();
+				} else if ( strchr (local_buffer.data, 'A')  ) {
+					pv_process_A();
 
-				} else if ( str = strchr (local_buffer.data, 'C')  ) {
-					// Leo el checksum
-					//remote_checksum = (int)strtol(str, NULL, 16);
-					remote_checksum = local_buffer.data[1];
-					if ( sent_checksum == remote_checksum ) {
-						printf("Verificacion de checksum = (0x%02x). OK.\n", remote_checksum);
-					} else {
-						printf("Verificacion de checksum = (0x%02x). ERROR !!\n", remote_checksum);
-					}
-					flush_local_buffer();
+				} else if ( strchr (local_buffer.data, 'X')  ) {
+					pv_process_X();
 
-				}	else if ( strstr (local_buffer.data, "X\n")  ) {
-					// Exit
-					puts("Exit..");
-					exit(0);
+				}  else if ( strchr (local_buffer.data, 'C')  ) {
+					pv_process_C();
 				}
-
 			}
 		}
 	}
@@ -213,6 +182,131 @@ int res;
  		sched_yield();
  	}
  }
+//------------------------------------------------------------------
+static void pv_process_C(void)
+{
+	// Recibi un 'C':
+	// Checksum
+
+int remote_checksum;
+
+	remote_checksum = local_buffer.data[1];
+	if ( sent_checksum == remote_checksum ) {
+		printf("Verificacion de checksum = (0x%02x). OK.\n", remote_checksum);
+	} else {
+		printf("Verificacion de checksum = (0x%02x). ERROR !!\n", remote_checksum);
+		//exit (1);
+	}
+	flush_local_buffer();
+
+}
+//------------------------------------------------------------------
+static void pv_process_X(void)
+{
+	// Recibi un 'X':
+	// Determino si es un comando de salir X\n o
+	// si es parte de un checksum C X \n
+
+	// Parte del checksum. Salgo
+	if  ( strstr (local_buffer.data, "CX\r") ) {
+		pv_process_C();
+		return;
+	}
+
+	// Exit
+	puts("Exit..");
+	exit(0);
+
+}
+//------------------------------------------------------------------
+static void pv_process_A(void)
+{
+	// Recibi un 'A':
+	// Determino si es un comando de abortar A\n o
+	// si es parte de un checksum C A \n
+
+	// Parte del checksum. Salgo
+	if  ( strstr (local_buffer.data, "CA\r") ) {
+		pv_process_C();
+		return;
+	}
+
+	// Abortar trasmision de pagina. ( Lo controlo al recibir los datos !!! )
+	puts("Abort signal !!.\n");
+	flush_local_buffer();
+
+}
+//--------------------------------------------------------------
+static void pv_process_M(void)
+{
+	// Recibi un 'M':
+	// Determino si es un comando de avanzar pagina M\n o
+	// si es parte de un checksum C M \n
+
+	// Parte del checksum. Salgo
+	if  ( strstr (local_buffer.data, "CM\r") ) {
+		pv_process_C();
+		return;
+	}
+
+	// Avanzo una pagina
+	pagina++;
+	printf("Move forward to page %03d.\n", pagina);
+	flush_local_buffer();
+
+}
+//------------------------------------------------------------------
+static void pv_process_P(void)
+{
+	// Recibi un 'P':
+	// Determino si es un comando de nueva pagina P\n o
+	// si es parte de un checksum C P \n
+
+	// Parte del checksum. Salgo
+	if  ( strstr (local_buffer.data, "CP\r") ) {
+		pv_process_C();
+		return;
+	}
+
+	// Pide la pagina activa
+	printf("Sending page %03d\n", pagina);
+	if (load_one_page(pagina)) {
+		sent_checksum = send_page(pagina);
+	} else {
+		puts("Empty page");
+		uart_putchar('Z');		// No hay mas paginas
+	}
+	flush_local_buffer();
+
+}
+//------------------------------------------------------------------
+static void pv_process_W(void)
+{
+	// Recibi un 'W':
+	// Determino si es un comando de tamaño de bloque W nn \n o
+	// si es parte de un checksum C W \n
+
+char *str;
+int page_size;
+
+	// Parte del checksum. Salgo
+	if  ( strstr (local_buffer.data, "CW\r") ) {
+		pv_process_C();
+		return;
+	}
+
+	// Block size
+	str  = strchr(local_buffer.data,'W');
+	str ++;
+	page_size = (int)strtol(str, NULL, 16);
+	printf("Tamano pagina recibido = %03d\n", page_size);
+	PAGESIZE_BYTES = page_size;
+	leerArchivo();
+	puts("Reading file..");
+	pagina = 1;
+	flush_local_buffer();
+
+}
 //------------------------------------------------------------------
 bool uart_putchar (const uint8 c)
 {
